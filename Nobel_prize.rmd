@@ -1,0 +1,422 @@
+---
+title: "Nobel Price API"
+author: "Pricilla"
+date: "2025-10-29"
+output:
+  pdf_document: default
+  html_document: default
+---
+Assignment 10B More JSON Practice
+
+
+
+Working with JSON data available through either of the APIs at https://www.nobelprize.org/about/developer-zone-2/
+
+Ask and answer 4 interesting questions
+
+Load required Libraries.
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+# --- Load Required Packages ---
+library(jsonlite)
+library(dplyr)
+library(purrr)
+library(ggplot2)
+library(dplyr)
+library(kableExtra)
+library(jsonlite)
+library(purrr)
+library(dplyr)
+library(lubridate)
+```
+
+
+Fetch All Laureates from Nobel API, Extract Personal data, Prizes, category, organisations, affliation country etc. and summarize that data.
+
+Which country has recieved the most Nobel Prizes?
+
+USA
+```{r}
+
+`%||%` <- function(x, y) if (is.null(x) || length(x) == 0) y else x
+
+get_in <- function(x, path) {
+  for (k in path) {
+    if (is.null(x) || is.null(x[[k]])) return(NA_character_)
+    x <- x[[k]]
+  }
+  if (is.list(x)) return(NA_character_) else return(as.character(x))
+}
+
+# --- Fetch All Laureates from Nobel API ---
+fetch_all_laureates <- function(limit = 100) {
+  offset <- 0
+  all_items <- list()
+  
+  repeat {
+    url <- sprintf("https://api.nobelprize.org/2.1/laureates?limit=%d&offset=%d", limit, offset)
+    resp <- fromJSON(url, simplifyVector = FALSE)
+    items <- resp$laureates
+    if (is.null(items) || length(items) == 0) break
+    all_items <- c(all_items, items)
+    if (length(items) < limit) break
+    offset <- offset + limit
+    Sys.sleep(0.2)
+  }
+  
+  all_items
+}
+
+# Expand and Summarize Data ---
+
+laureates <- fetch_all_laureates(limit = 100)
+rows <- map_dfr(laureates, function(l) {
+  # Extract name
+  name <- get_in(l, c("knownName", "en")) %||% get_in(l, c("orgName", "en"))
+  
+  # Extract personal information
+  gender <- get_in(l, c("gender"))
+  birth_date <- get_in(l, c("birth", "date"))
+  birth_city <- get_in(l, c("birth", "place", "city", "en"))
+  birth_country <- get_in(l, c("birth", "place", "country", "en"))
+  birth_country_now <- get_in(l, c("birth", "place", "countryNow", "en"))
+  
+  # For organizations
+  org_country <- get_in(l, c("founded", "place", "countryNow", "en")) %||%
+                 get_in(l, c("founded", "place", "country", "en"))
+  
+  # Primary country (for counting awards)
+  person_country <- birth_country_now %||% birth_country
+  country <- person_country %||% org_country
+  
+  prizes <- l$nobelPrizes
+  if (is.null(prizes) || length(prizes) == 0) {
+    return(tibble(
+      name = name,
+      gender = gender,
+      birth_date = birth_date,
+      birth_city = birth_city,
+      birth_country = birth_country,
+      birth_country_now = birth_country_now,
+      country = country,
+      category = NA_character_,
+      year = NA_integer_,
+      affiliation_country = NA_character_,
+      residence_country = NA_character_
+    ))
+  }
+  
+  map_dfr(prizes, function(p) {
+    year <- suppressWarnings(as.integer(p$awardYear))
+    category <- get_in(p, c("category", "en"))
+    
+    # Extract affiliation and residence countries
+    affiliation_country <- NA_character_
+    residence_country <- NA_character_
+    
+    if (!is.null(p$affiliations) && length(p$affiliations) > 0) {
+      affiliation_country <- get_in(p$affiliations[[1]], c("country", "en"))
+    }
+    
+    if (!is.null(p$residences) && length(p$residences) > 0) {
+      residence_country <- get_in(p$residences[[1]], c("country", "en"))
+    }
+    
+    tibble(
+      name = name,
+      gender = gender,
+      birth_date = birth_date,
+      birth_city = birth_city,
+      birth_country = birth_country,
+      birth_country_now = birth_country_now,
+      country = country,
+      year = year,
+      category = tolower(category),
+      affiliation_country = affiliation_country,
+      residence_country = residence_country
+    )
+  })
+})
+
+# Summary by primary country
+award_summary <- rows %>%
+  filter(!is.na(country), country != "") %>%
+  count(country, sort = TRUE, name = "award_count")
+
+top_n <- 10
+kable(
+  head(award_summary, top_n),
+  caption = paste("Top", top_n, "Countries by Nobel Awards"),
+  col.names = c("Country", "Number of Awards"),
+  align = "l"
+) %>%
+  kable_styling()
+```
+How many and organisations have won a Nobel Prize?
+```{r}
+# Count the total number of people/rows in the original data
+total_award_winners <- nrow(rows)
+print( total_award_winners)
+```
+
+Plot of top 20 countries that have recieved nobel Prizes.
+```{r}
+
+top_n <- 20
+award_top <- award_summary %>% 
+  slice_head(n = top_n)
+
+# Bar plot
+ggplot(award_top, aes(x = reorder(country, award_count), y = award_count, fill = country)) +
+  geom_bar(stat = "identity") +
+  geom_text(aes(label = award_count), hjust = -0.1, size = 3) +
+  coord_flip() +  # horizontal bars
+  labs(
+    title = paste("Top", top_n, "Countries by Nobel Awards"),
+    x = "Country",
+    y = "Number of Nobel Awards"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "none")
+
+```
+Who were the first 20 people to receive awards and in what categories?
+```{r}
+# Get first 20 laureates with name, birth country, and affiliation country
+first_20 <- rows %>%
+  filter(!is.na(name)) %>%
+  select(name, birth_country, affiliation_country, year, category) %>%
+  arrange(year) %>%
+  head(20)
+
+# Create kable table
+first_20 %>%
+  kable(caption = "First 20 Nobel Prize Winners: Name, Birth Country, and Award Country",
+        col.names = c("Name", "Birth Country", "Award Country", "Year", "Category")) %>%
+  kable_styling()
+```
+
+
+
+Who are the most recent 20 people to receive awards and in what categories?
+
+```{r}
+# Get latest 20 laureates with all requested fields
+latest_20_detailed <- rows %>%
+  filter(!is.na(name), !is.na(year)) %>%
+  select(name, gender, birth_date, birth_country, 
+         category, year, affiliation_country) %>%
+  arrange(desc(year)) %>%  # Changed to descending order
+  head(20)
+
+# Create kable table
+latest_20_detailed %>%
+  kable(caption = "Latest 20 Nobel Prize Winners: Detailed Information",
+        col.names = c("Name", "Gender", "Birth Date", 
+                      "Birth Country", "Category", "Award Year", "Award Country")) %>%
+  kable_styling()
+```
+
+What is the Average age of Noble Prize winners?
+```{r}
+
+# Convert the laureates list to a dataframe first
+laureates_df <- map_dfr(laureates, function(l) {
+  name <- get_in(l, c("knownName", "en")) %||% get_in(l, c("orgName", "en"))
+  birth_date <- get_in(l, c("birth", "date"))
+  
+  prizes <- l$nobelPrizes
+  if (is.null(prizes) || length(prizes) == 0) return(NULL)
+  
+  map_dfr(prizes, function(p) {
+    tibble(
+      name = name,
+      birth_date = birth_date,
+      award_year = get_in(p, c("awardYear"))
+    )
+  })
+})
+
+# Create age_df from rows - INCLUDE category column
+age_df <- rows %>%
+  filter(!is.na(year), !is.na(birth_date), birth_date != "") %>%
+  mutate(
+    birth_dt = parse_date_time(birth_date, orders = c("Ymd", "Y-m-d", "Y-m", "Y"), quiet = TRUE),
+    award_dt = make_date(year, 12, 10),
+    age_years = time_length(interval(birth_dt, award_dt), "years")
+  ) %>%
+  filter(!is.na(age_years), age_years >= 0) %>%
+  select(name, category, year, birth_date, age_years, everything())  # Make sure category is included
+
+# Overall average age
+overall_avg_age <- mean(age_df$age_years, na.rm = TRUE)
+
+cat(sprintf("Overall average age at award: %.2f years (N = %d laureate–prize records)\n",
+overall_avg_age, nrow(age_df)))
+```
+
+Which categories are winning the most awards. And at what Average age are the winners?
+```{r}
+# Average age by category
+avg_by_category <- age_df %>%
+  group_by(category) %>%
+  summarise(
+    n = n(),
+    avg_age = mean(age_years, na.rm = TRUE),
+    median_age = median(age_years, na.rm = TRUE)
+  ) %>%
+  arrange(desc(n))
+
+#print(avg_by_category %>% mutate(avg_age = round(avg_age, 2), median_age = round(median_age, 2)))
+avg_by_category %>%
+  mutate(avg_age = round(avg_age, 2), 
+         median_age = round(median_age, 2)) %>%
+  kable(caption = "Average and Median Age by Category") %>%
+  kable_styling()
+```
+Are women winning Awards too? And what is the Average age by gender?
+```{r}
+avg_by_gender <- age_df %>%
+  filter(!is.na(gender) & gender != "") %>%
+  group_by(gender) %>%
+  summarise(n = n(), avg_age = mean(age_years, na.rm = TRUE)) %>%
+  arrange(desc(n)) %>%
+  mutate(avg_age = round(avg_age, 2))
+
+avg_by_gender %>%
+  kable(col.names = c("Gender", "Number of Laureates", "Average Age (Years)"),
+        caption = "Average Age of Nobel Laureates by Gender",
+        align = c("l", "c", "r")) %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"),
+                full_width = FALSE,
+                position = "left")
+```
+Who are the Youngest 10 prize winners and in what categories?
+
+```{r}
+
+youngest <- age_df %>%
+  arrange(age_years) %>%
+  select(name, category, birth_date, age_years, year) %>%
+  head(10) %>%
+  mutate(age_years = round(age_years, 2))
+
+youngest %>%
+  kable(col.names = c("Name", "Category", "Birth Date", "Age (Years)", "Award Year"),
+        caption = "Youngest 10 Nobel Laureate–Prize Observations",
+        align = c("l", "l", "c", "c", "r")) %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"),
+                full_width = FALSE,
+                position = "left")
+```
+
+
+
+Who are the Oldest 10 prize winners?
+```{r}
+oldest <- age_df %>%
+  arrange(desc(age_years)) %>%
+  select(name, category, year, birth_date, age_years) %>%
+  head(10)%>%
+  mutate(age_years = round(age_years, 2))
+
+
+oldest  %>%
+  kable(col.names = c("Name", "Category", "Award Year", "Birth Date", "Age (Years)"),
+        caption = "Oldest 10 Nobel Laureate–Prize Observations",
+        align = c("l", "l", "c", "c", "r")) %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"),
+                full_width = FALSE,
+                position = "left")
+
+```
+
+
+What category has won the most prizes?
+
+```{r}
+ggplot(avg_by_category, aes(x = reorder(category, -n), y = n, fill = category)) +
+  geom_bar(stat = "identity") +
+  geom_text(aes(label = n), vjust = -0.3, size = 3.5) +
+  labs(
+    title = "Number of Nobel Laureates by Category",
+    x = "Category",
+    y = "Number of Laureates"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "none")
+
+```
+
+Which Organisations have won a prize?
+```{r}
+
+# Create dataframe and identify organizations
+laureates_df <- data.frame(
+  id = sapply(laureates, function(x) x$id %||% NA),
+  name = sapply(laureates, function(x) get_in(x, c("knownName", "en"))),
+  org_name = sapply(laureates, function(x) get_in(x, c("orgName", "en"))),
+  gender = sapply(laureates, function(x) x$gender %||% NA),
+  birth_date = sapply(laureates, function(x) x$birth$date %||% NA),
+  founded_date = sapply(laureates, function(x) x$founded$date %||% NA),
+  stringsAsFactors = FALSE
+)
+
+# Filter to see only organizations
+organizations_df <- laureates_df %>%
+  filter(!is.na(org_name) | is.na(gender))
+
+organizations_df %>%
+  arrange(org_name) %>%
+  select(org_name, founded_date, id) %>%
+  kable(caption = "Nobel Prize Winning Organizations") %>%
+  kable_styling()
+```
+
+
+
+Which country “lost” the most nobel laureates (who were born there but received their Nobel prize as a citizen of a different country)?
+
+Filter for cases where birth country is not the same as affiliation country.
+
+```{r}
+# Filter laureates whose birth and affiliation countries differ
+different_countries <- rows %>%
+  filter(!is.na(birth_country), 
+         !is.na(affiliation_country),
+         birth_country != affiliation_country) %>%
+  select(name, year, category, birth_country, affiliation_country)
+
+# Count occurrences of each birth country
+birth_country_counts <- different_countries %>%
+  count(birth_country, sort = TRUE, name = "count")
+
+# Display full results as kable
+birth_country_counts %>%
+  kable(
+    caption = "All Birth Countries of Laureates Awarded in a Different Country",
+    col.names = c("Birth Country", "Count"),
+    align = "l"
+  ) %>%
+  kable_styling(
+    full_width = FALSE,
+    bootstrap_options = c("striped", "hover", "condensed", "responsive")
+  )
+
+```
+
+
+Show an example of birth country and affiliation country?
+```{r}
+different_countries[1:10, ] %>%
+  kable(
+    caption = "Nobel Laureates with Birth Country Different from Affiliation Country",
+    col.names = c("Name", "Year", "Category", "Birth Country", "Affiliation Country"),
+    align = "l"
+  ) %>%
+  kable_styling()
+```
+
+
+
+The average age to win a nobel prize is 61 years old and most winners are in the psyiology and medicine categories. Women have only won 65 prizes out if 971.The rest have been won by Organisations.
